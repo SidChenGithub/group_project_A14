@@ -1,0 +1,1864 @@
+---
+title: "Final Group Project: AirBnB Stockholm analytics"
+date: "12 Oct 2021"
+author: "Study Group A14: Sid Chen, Yuxin Cheng, Yugyel Dorji, Katrin Haas, Nikos Katsanevakis, Matthew Lane"
+output:
+  html_document:
+    highlight: zenburn
+    theme: flatly
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    code_folding: show
+    latex_engine: xelatex
+---
+
+# Executive summary
+
+xxx
+
+# Data exploration and feature selection
+
+## Downloading the data
+
+```{r setup, include=FALSE}
+# leave this chunk alone
+options(knitr.table.format = "html") 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+  comment = NA, dpi = 300)
+```
+
+```{r load-libraries, echo=FALSE}
+
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate) # to handle dates
+library(GGally) # for correlation-scatter plot matrix
+library(ggfortify) # to produce residual diagnostic plots
+library(rsample) # to split dataframe in training- & testing sets
+library(janitor) # clean_names()
+library(broom) # use broom:augment() to get tidy table with regression output, residuals, etc
+library(huxtable) # to get summary table of all models produced
+library(kableExtra) # for formatting tables
+library(moderndive) # for getting regression tables
+library(skimr) # for skim
+library(mosaic)
+library(leaflet) # for interactive HTML maps
+library(tidytext)
+library(viridis)
+library(vroom)
+library(grid)
+library(gridExtra)
+library(infer)
+```
+
+We download AirBnB data from [insideairbnb.com](http://insideairbnb.com/get-the-data.html){target="_blank"}; it was originally scraped from airbnb.com. All of the AirBnB listings in Stockholm are a GZ file, namely they are archive files compressed by the standard GNU zip (gzip) compression algorithm. We can download, save and extract the file if we wanted, but `vroom::vroom()` or `readr::read_csv()` can immediately read and extract this kind of a file. We prefer `vroom()` as it is faster, but if `vroom()` is limited by a firewall, we should use `read_csv()` instead. `vroom` will download the *.gz zipped file, unzip, and provide you with the dataframe. 
+
+
+```{r load_data, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+#download the data with the help of vroom()
+listings <- vroom("http://data.insideairbnb.com/sweden/stockholms-l%C3%A4n/stockholm/2021-09-30/data/listings.csv.gz") %>% 
+       clean_names()
+```
+
+## Explanatory data analysis
+
+### First look and data wrangling
+
+Let us have a look of the raw data that we downloaded first and also provide some first summary statistics of the dataset.
+
+```{r}
+#use head function to look at raw values
+listings %>% 
+  
+  #don't show these columns because they have too many texts and would ruin the entire table
+  select(-description, -neighborhood_overview, -host_about, -amenities) %>% 
+  
+  head() %>% 
+
+  #use kable and kableextra to format the table in our HTML output
+  kable(caption = "First few rows of our original dataset",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  
+  #use row_spec to bold the column titles
+  row_spec(0, bold = T) %>% 
+  
+  #use scroll box to save space
+  scroll_box(width = "100%")
+
+```
+
+```{r}
+#use skim function for to summarize all variables we have and look at NA values
+skim(listings) %>% 
+  kable(caption = "Brief summary on all variables in our original dataset",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%", height = "400px")
+
+```
+
+From the above, we can see that our dataframe contains 2,933 observations and 74 variables. Of these variables, 23 are of type character, 5 are of type date, 9 of type logical (TRUE or FALSE) and the remaining 37 variables are numeric. We can find a data dictionary [here](https://docs.google.com/spreadsheets/d/1iWCNJcSutYqpULSQHlNyGInUvHg2BoUGoNRIGa6Szc4/edit#gid=982310896) and understand what all these variables mean.
+
+Since it does not make sense to include all variables as explanatory variables in our model to predict the price of a 4-night stay in Stockholm, we will now continue to explore the dataframe and identify those variables that are of particular interest.
+
+After having looked at the dataframe in more detail, we conclude that we can disregard many variables as they will not provide any useful information about the price. These include i.a. the `scrape_id`, `last_scraped`, `picture_url` or `host_id`. The latter one we remove as we cannot be sure that a shorter `host_id` means that the host is already longer active on AirBnB or not and due to the fact that we have the variable `host_since` and gives us the information. We will remove them from the dataframe which will also later make our calculations faster.
+
+```{r}
+#check whether host_total_listings_count and host_listings_count are the same
+if(listings$host_total_listings_count == listings$host_listings_count){
+  print("Is identical")
+}
+```
+
+```{r}
+listings_clean <- listings %>% 
+  
+  #remove irrelevant variables
+  select(-c(description, neighborhood_overview, scrape_id, last_scraped,
+            picture_url, host_url, host_id, host_name, host_about,
+            host_thumbnail_url, host_picture_url, host_verifications,
+            host_location, host_total_listings_count, host_neighbourhood,
+            host_identity_verified,
+            
+            #remove variables other than minimum and maximum nights (as these are the ones applicable to the listing)
+            minimum_minimum_nights, minimum_maximum_nights, maximum_minimum_nights, maximum_maximum_nights,
+            minimum_nights_avg_ntm, maximum_nights_avg_ntm,
+            calendar_updated, calendar_last_scraped,
+            
+            #remove license as only NAs
+            license,
+            
+            #remove date of first review as only latest relevant
+            first_review,
+            
+            #remove detailed counts of listings
+            calculated_host_listings_count_entire_homes,
+            calculated_host_listings_count_private_rooms, 
+            calculated_host_listings_count_shared_rooms
+            ))
+
+#use skim function for to summarize all variables we have and look at NA values
+skim(listings_clean) %>% 
+  kable(caption = "Brief summary on all variables in our cleaned dataset",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%", height = "400px")
+
+```
+
+Now that we have removed some of the unnecessary variables and reduced numbers of columns from 73 to 45, we want to inspect the remaining variables in more detail. This will not only help us to understand the data better but also to clean it even further for our later regression analysis.
+
+### Price
+
+Let us first have a look at the `price` variable that we are interested in to predict later. Please note that the price is given in SEK.
+
+```{r}
+typeof(listings_clean$price)
+```
+
+The type of `price` variable is character at the moment. Since `price` is a quantitative variable, we need to make sure it is stored as numeric data `num` in the dataframe. To do so, we will first use `readr::parse_number()` which drops any non-numeric characters before or after the first number.
+
+```{r}
+
+#convert character variable to numeric
+listings_clean <- listings_clean %>% 
+  mutate(price = parse_number(price))
+
+typeof(listings_clean$price)
+
+```
+
+We will look at some statistics about `price`.
+
+```{r}
+#summary statistics of price
+favstats(~price, data = listings_clean) %>% 
+  kable(caption = "Statistics on listing price in Stockholm",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+
+#distribution of price
+density <- ggplot(listings_clean, aes(x=price)) +
+  geom_density(fill="pink")+
+  labs(x = NULL,
+       y = "Density") +
+  theme_bw()+
+  NULL
+
+boxpl <- ggplot(listings_clean, aes(x = price)) +
+  geom_boxplot(fill = "pink")+
+  labs(x = NULL, y = NULL) +
+  theme_bw()+
+  NULL
+
+grid.arrange(density, boxpl, ncol=2, nrow=1, 
+             top=textGrob("Distribution of AirBnB prices per night in Stockholm"),
+             bottom = textGrob("Price per night", gp = gpar(cex = 0.9)))
+
+```
+
+The distribution of price per night in SEK is unimodel and heavily positively skewed, demonstrated by the mean (1164SEK) being greater than the median (900), the distribution is thus non-normally distributed. The median price per night is 900SEK, or roughly £75. The large dispersion of prices is almost certainly a consequence of the nondescript nature in which the price data was collected, with no filters applied the maximum price per night in Stockholm is 25,000SEK (c.£2100) likely for a large and extremely premium property. So far, we can't conclude on the property type or location for this property as we don't know whether its price is a function of location or just size and amenities - i.e could be a large detached property in green spaces outside central Stockholm or large modern loft in the middle of the city.
+
+It is interesting to note that a price of 0SEK per night is observed as the curve doesn't start with a density of zero, perhaps this is an input error or it could be a free sofa-surfing arrangement offered by the host for travelers or those in need. The concentration or high kurtosis of the distribution is somewhat surprising. The middle 50% of the data is between 600 and 1429 SEK, which converts to c.£51  and £121, respectively. A median price of £75 a night is relatively cheap for a developed nations capital city, an inference reinforced when considering there are few listings beyond 2500SEK a night. This could perhaps be a reflection of the socio-economic backgrounds of those listing properties on Airbnb and also perhaps a reflection of Swedish urban housing. Having looked at the various neighbourhoods, small apartments in tower blocks appear to dominate the housing on offer to local residents. This is unlike London where there is a greater mix of semi-detached housing, converted flats and purpose built complexes.
+
+The boxplot above clearly shows that we have to very strong outliers with a price of 20,000SEK or above, which are not considered anywhere close to what you would normally pay for one night as a tourist. Given that these outlies may distort our future calculations, we will remove them from the dataset.
+
+Last but not least, we need to address the fact that we have AirBnBs with zero price. All of them are hotel rooms, so perhaps the hotel has already filled them or they forgot to take the listing out of AirBnB's platform. In either case, these should also be disregarded in the final dataset and model, as they only distort the data.
+
+```{r}
+
+#remove price outliers
+listings_clean <- listings_clean %>% 
+  filter(price < 20000 & price > 0)
+
+```
+
+
+### AirBnB for travel purposes
+
+Airbnb is most commonly used for travel purposes, i.e., as an alternative to traditional hotels. We only want to include listings in our regression analysis that are intended for travel purposes. Therefore, let us look at the variable `minimum_night` that indicates the minimum number of nights stay for the listing.
+
+```{r}
+hist1 <- ggplot(data = listings_clean, aes(x = minimum_nights)) +
+  geom_histogram(fill = "navy") +
+  labs(x = NULL, y = "Number of listings") + 
+  theme_bw()+
+  NULL
+  
+hist2 <- ggplot(data = listings_clean, aes(x = minimum_nights)) +
+  geom_histogram(binwidth = 1, fill="navy") +
+  coord_cartesian(xlim = c(0,8)) +
+  #scale_x_discrete(breaks=seq(-2,8,by=1)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw()+
+  NULL
+  
+library(cowplot)
+#plot_grid(hist1, hist2)
+grid.arrange(hist1, hist2, ncol=2, nrow=1, 
+             top=textGrob("Number of listings according to minimum nights required"),
+             bottom = textGrob("Number of minimum nights required",
+                               gp = gpar(cex = 0.9)))
+```
+
+The right plot form the above output indicates that 2 is the most common number of minimum nights required by the hosts, followed by a minimum stay of 1 night. This is confirmed by the following table counting the different number of nights required:
+
+```{r}
+
+head(listings_clean %>% 
+  count(minimum_nights) %>% 
+  mutate(percent = round(n/sum(n) * 100,2)) %>% 
+  arrange(desc(n)), n=10) %>% 
+  kable(caption = "Summary of how many nights is required as minimum stay",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+
+```
+
+We also see a bump at 7 days, meaning that certain hosts require their guests to stay 7 days. This might be due to the fact that they are on vacation during that time themselves and want to rent their apartment/house for the full time they are away.
+
+From the left plot of the above output we can see that there are some listings that expect people to stay for at least 30 days, 100 days, one year (365 days) or even 500 days. These listings are most probably intended to be long-term rentals and maybe a way for the landlord to circumvent tax. They are, however, not intended for tourists or short-term visitors and are thus not useful in our analysis as we want to predict the price for a 4-night stay. This is why we remove them from the dataframe in a next step.
+
+```{r}
+
+#remove listings with more than 4 nights required 
+listings_clean <- listings_clean %>% 
+  filter(minimum_nights <= 4)
+
+```
+
+### Property types
+
+Next, we look at the variable `property_type`. We can use the `count` function to determine how many categories there are and their frequency. From the below output we can see that the 4 most common property types are *Entire rental unit*, *Private room in rental unit*, *Entire residential home* and *Entire condominium (condo)*. Together they make up more than 80\% of the property types.
+
+```{r}
+#count observations per property type category
+head(listings_clean %>% 
+  count(property_type) %>% 
+  #calculate percentage
+  mutate(percent = round(n/sum(n)*100,2)) %>% 
+  arrange(desc(percent)), n = 15) %>% 
+  kable(caption = "Summary of property types",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F,
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(height = "250px")
+
+```
+
+Since the vast majority of the observations in the data are one of the top four property types, we would like to create a simplified version of `property_type` variable that has 5 categories: the top four categories and `Other`.
+
+```{R}
+
+#create vector to order simplifed property types later
+ordered_p_types = c("Entire rental unit","Private room in rental unit",
+                    "Entire residential home","Entire condominium (condo)",
+                    "Other")
+
+#simplify property_type variable to only have 5 categories
+listings_clean <- listings_clean %>%
+  mutate(prop_type_simplified = factor(case_when(
+    property_type %in% c("Entire rental unit","Private room in rental unit",
+                         "Entire residential home","Entire condominium (condo)") ~ property_type, 
+    TRUE ~ "Other"),
+    levels = ordered_p_types,
+    labels = ordered_p_types))
+
+#check whether new variable was correctly created
+listings_clean %>%
+  count(property_type, prop_type_simplified) %>%
+  arrange(desc(n)) %>% 
+  kable(caption = "Summary of simplified property types",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F,
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(height = "250px")
+  
+
+```
+
+Let us now know look at the price distribution for these 5 categories and see whether we can find a difference.
+
+```{r}
+#summary statistics of price categorised by room type
+favstats(price~prop_type_simplified, data = listings_clean) %>% 
+  kable(caption = "Statistics on simplified property types",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#plot distribution of price for each room type
+ggplot(data=listings_clean,
+       aes(x = prop_type_simplified, y = price,
+           color = prop_type_simplified)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "Distribution of price among property types",
+       x = "Property type",
+       y = "Price") +
+  theme(legend.position = "none") +
+  NULL
+```
+
+The boxplot of the property types shows clearly that the type with the lowest median is a **Private room in a rental unit**. The type with the highest median is **Entire residential home**. The highest and lowest medians make intuitive sense as the lowest is for a single room whilst the highest is for an entire home.
+
+An interesting note though, is the number of outliers in each of the property types. This probably has mostly to do with the subjectivity of classifying property types. As the data shows clearly, the type with the most outliers is **Entire rental unit**. This definition can encompass a studio flat or an entire house, which would cost significantly more than a single studio. The **Other** section has a significant number of outliers which is likely due to the cleaning done in the previous section that grouped many different property types together. Looking at the raw data shows this subjectivity, boats, campervans and cabins are included in other along with entire townhouses and lofts. The effect of subjectivity on ranges and outliers is also apparent with the condominium property type as that has much fewer outliers and a tight range, due to the how the property type has less room for subjectivity for the hosts in listing their properties. 
+
+It is further interesting to note the concentration of the **private room in rental unit** distribution. Although it is certainly non-normal the concentration of price around its median is impressive and suggests that the market for private rooms is in a somewhat equilibrium with a clear tight range of prevailing market prices dominating listings. Entire residential homes, on the other hand, have a more dispersed distribution as it resembles a normal distribution far more than the other categories. This suggests a wider variation in the prevailing market prices but is also perhaps a reflection on, again, the subjectivity of categorization as residential homes can widely vary in size, location and amenities. 
+
+A further observation is that **entire rental units** make up over half of the properties listed. This could have a significant impact on our predictive model.
+
+### Room type
+
+Our dataset does not only contain information about the property type of the listing but also about the room type. We will inspect this variable in a next step.
+
+```{r}
+#count observations per room type category
+head(listings_clean %>% 
+  count(room_type) %>% 
+  #calculate percentage
+  mutate(percent = round(n/sum(n)*100,2)) %>% 
+  arrange(desc(percent)), n = 15) %>% 
+  kable(caption = "Summary of room types",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+  
+#summary statistics of price based on room categories
+favstats(price ~ room_type, data = listings_clean) %>% 
+  kable(caption = "Statistics on room types",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#visualise distribution of price among room categories
+ggplot(listings_clean,
+       aes(x = room_type, y = price,
+           color = room_type)) +
+  geom_boxplot() +
+  #facet_wrap(~room_type)+
+   labs(title = "Distribution of price among room types",
+       x = "Price per night",
+       y = "Density") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  NULL
+
+```
+
+From the table above as well as the boxplot diagrams, we can see that entire homes and apartments have the highest average price and thus show a strong difference in price to that of other room types. The boxplots of the different room types are all right skewed, meaning all the means are higher than the medians, except for hotel rooms. We will keep this difference in mind later when we build our model. It is also important to note that c.71% of the room data belongs to the entire home/apt category with a further c.25% being made up of private rooms.  
+
+### How many people the listing accommodates and number of rooms
+
+The variable `accommodates` gives us an idea of how many people can fit into the listed property. We can see from the output below that around 40% of airbnb rooms are made to accommodate 2 people. The vast majority of rooms are made to accommodate less than 4 people. This makes sense as airbnb is focused on normal homes being rented out to guests which mean the housing capacity is lower, especially in cities such as Stockholm where most people live in flats rather than houses. The scattering of airbnbs that accommodate more than 5 people could be families that have moved out of Stockholm looking for long term leases of their homes.
+
+```{r}
+#get summary statistics of `accomodates` variable
+favstats(~accommodates, data = listings_clean) %>% 
+  kable(caption = "Statistics on how many people the property accommodates",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#plot distribution of variable
+ggplot(listings_clean, aes(x = accommodates)) +
+  geom_histogram(fill = "darkgreen")+
+  labs(title = "Number of listings for different number of accomodates",
+       x = "Number of accommodates",
+       y = "Number of listings") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+Since the number of how many people an apartment/house can fit goes hand in hand with the number of bathrooms and bedrooms provided, we also want to check the correlation among these variables.
+
+Before doing this, we first need to convert `bathrooms_text` into `bathrooms`, with the latter being a numeric, and include an additional step to account for the `NAs` produced with this method.
+
+```{r}
+#convert into numeric
+listings_clean <- listings_clean %>% 
+  mutate(bathrooms = parse_number(bathrooms_text))
+
+#check whether transformation worked
+typeof(listings_clean$bathrooms)
+
+#check why there are NA values of bathrooms
+listings_clean %>% 
+  filter(is.na(bathrooms)) %>% 
+  count(bathrooms_text) %>% 
+  kable(caption = "For rows that have NA values in bathrooms, their original bathrooms texts have these following values",
+        align = "r") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T) %>% 
+  column_spec(1, width = "40%")
+
+```
+
+We can see all samples with NA values in the new `bathrooms` variables have half-baths or NA in `bathrooms_text`. We decide to assign 0.5 to `bathrooms` if it has half-bathroom, otherwise leave it as NA.
+
+```{r}
+
+listings_clean <- listings_clean %>%
+  mutate(bathrooms = ifelse(!is.na(bathrooms_text) & is.na(bathrooms),
+                            0.5, bathrooms))
+
+```
+
+Now let's take a look on `accommodates`, `bathrooms`, `bedrooms` and `beds`.
+
+```{r}
+
+#Use ggpairs() to show correlation
+listings_clean %>% 
+  select(accommodates, bedrooms, bathrooms, beds) %>% 
+  ggpairs()
+
+```
+
+The correlation coefficients calculated above are as would be expected. The correlation of bathrooms, beds, and bedrooms with accommodation are all positive as they directly relate to the number of people that can accommodate a certain area.
+
+The data shows that the number of beds and bedrooms are more strongly correlated to the number of people that can be accommodated than to each other. This makes sense as the number of beds directly relate to the number of people that can stay there, while bathrooms can be shared between multiple people.
+
+It is somewhat surprising is that beds and bedrooms are not more perfectly correlated. Perhaps this is because hosts count sofa beds in their bed count but don't count the room the bed is in as a bedroom, as it is more likely a living room. Nevertheless, we will keep the correlation in mind for our regression analysis later.
+
+Since we want to look at how much a 2-people stay would cost, it comes natural to filter out those properties that only accommodates 1 person.
+
+```{r}
+listings_clean <- listings_clean %>% 
+  filter(accommodates >= 2)
+```
+
+
+### Availability
+
+There are different variables for the availability of the listings (`availability_30`, `availability_60`, `availability_90`, `availability_365`), based on the time horizon. Let us look at the distribution of each of them and their correlation with each other and the price with the help of `ggpairs()`.
+
+```{r}
+
+listings_clean %>% 
+  select(availability_30, availability_60, availability_90, availability_365, price) %>% 
+  ggpairs()
+
+```
+
+The correlation of the availabilities are with one another are all positive. Upon closer inspection, the correlation of the availabilities closest to one another are the ones that are most strongly correlated. For example, the correlation between `availability_30` and `availability_60` is 0.94, almost a perfect correlation, the same holds for the correlation between `availability_60` and `availability_90` which is even higher with 0.97. This indeed makes sense as properties that are available for 30 days should in most cases, barring a booking in the future, be available for 60 or 90 days as well. The correlation coefficients then decrease substantially when calculated with `availability_365.` This could be because many hosts are renting airbnbs temporarily and not permanently, meaning they don't take bookings that far in the future as they are just planning on renting it out for a few months.
+
+Due to the fact that the availability measures are all highly correlated, we will only choose one of them in order to explain the price later. Since the availability for the next 30 days (`availability_30`) in the one highest correlated with the price, we will only keep this variable. However, the correlation is very close to zero which is why we do not expect that the availability will be a significant predictor of the price.
+
+### Number of reviews
+
+While we have multiple variables for the number of reviews, those variables for the number of reviews in the last 12 months (`number_of_reviews_ltm`) and in the last 30 days (`number_of_reviews_l30d`) are oftentimes zero. This is why we will first analyse the variable for the total number of reviews (`number_of_reviews`) further.
+
+```{r}
+#summary statistics of total number of reviews
+favstats(~number_of_reviews, data = listings_clean) %>% 
+  kable(caption = "Statistics on number of reviews",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#visualisation of distribution of number of reviews
+histo1 <- ggplot(listings_clean, aes(x = number_of_reviews)) +
+  geom_histogram(fill = "lightblue",
+                 color = "white") +
+    labs(x = NULL,
+         y = "Number of listings") +
+  theme_bw() +
+  NULL
+
+histo2 <- ggplot(listings_clean, aes(x = number_of_reviews)) +
+  geom_histogram(binwidth = 5,
+                 fill = "lightblue",
+                 color = "white") +
+  coord_cartesian(xlim = c(0,50)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  NULL
+
+#plot_grid(histo1, histo2)
+grid.arrange(histo1, histo2, ncol=2, nrow=1, 
+             top=textGrob("Number of listings according to number of reviews"),
+             bottom = textGrob("Number of reviews", gp = gpar(cex = 0.9)))
+```
+
+As shown above, the mean and median number of reviews was calculated to be 30 and 10 respectively. This could be due to the high number of outliers that have many reviews, as shown in the data set (there is 1 with 593 reviews and 2 with around 260 reviews). It is also shown in the histogram of the data set. The small spike near the 300 mark is visible while the single outlier of 593 is not.
+
+The histogram also makes clear that most of the airbnbs have 10 or less reviews. This might just simply be due to the fact that people do not like giving reviews or because many new AirBnB listings have recently been added. More people might have started opening airbnb as a way of making of a living after having been through financial hardships caused by COVID and the lockdown heavy environment of the last few years.
+
+Since the number of reviews has a high variability, we create a new variable called `reviews_30_plus` that will take `yes` if the listing has 10 or more reviews and `no` otherwise. We will look at the price for these two groups as a second step to see whether there is a difference.
+
+```{r}
+#create new variable
+listings_clean <- listings_clean %>% 
+  mutate(reviews_30_plus = ifelse(number_of_reviews >= 30, "yes", "no"))
+
+#summary statistics for price based on new variable
+favstats(price~reviews_30_plus, data = listings_clean) %>% 
+  kable(caption = "Statistics on whether the listing has more than 30 reviews",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#visualise distribution of price based on that variable
+ggplot(listings_clean,
+       aes(x = reviews_30_plus, y = price,
+           fill=reviews_30_plus)) +
+  geom_boxplot() +
+  labs(title = "Distribution of price based on whether listings have at least 30 reviews",
+       x = "Price per night",
+       y = "Density") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+From the above table and boxplots we cannot really see a stark difference in the price between the listings with higher and lower reviews. In order to get a sense of that, let us calculate the confidence intervals for the mean price for the two groups and conduct a hypothesis test in order to check whether there is a difference in the mean of the price among those two groups.
+
+```{r}
+# calculate CIs with formula
+formula_ci <- listings_clean %>% 
+  group_by(reviews_30_plus) %>% 
+  summarise(mean_price = mean(price, na.rm = TRUE),
+            sd_price = sd(price, na.rm = TRUE),
+            count = n(),
+            SE = sd_price/sqrt(count),
+            t_critical = qt(0.975, count - 1),
+            lower = mean_price - t_critical * SE,
+            upper = mean_price + t_critical * SE)
+
+formula_ci %>% 
+  kable(caption = "Statistics on whether the listing has more than 30 reviews",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#conduct hypothesis test with t.test
+t.test(price~reviews_30_plus, data = listings_clean)
+
+```
+
+Even though the calculated confidence intervals slightly overlap, the hypothesis test shows that the means are significantly different up until the 99% confidence interval. The 95% confidence interval is normally used in academia and so we can reject the null hypothesis in this case. This result means that we can expect listing prices to differ between homes with more than 30 reviews versus those with less than 30 reviews, an observation useful for our future regression analysis. We will keep this in mind later when we conduct our regression analyses.
+
+In relation to the total number of reviews we are also given an average number of `reviews_per_month`. Let us look at the distribution of this variable and its correlation to the total number of reviews as well as the price.
+
+```{r}
+#summary statistics of reviews_per_month
+favstats(~reviews_per_month, data = listings_clean) %>% 
+  kable(caption = "Statistics on monthly reviews",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#distribution of reviews_per_month
+ggplot(listings_clean, aes(reviews_per_month)) +
+  geom_histogram(fill= "lightblue") +
+  labs(title = "Distribution of number of reviews per month",
+       x = "Number of reviews per month",
+       y = NULL) +
+    theme_bw() +
+  NULL
+
+#calculate correlation between reviews_per_month, number_of_reviews and price
+listings_clean %>% 
+  dplyr::select(reviews_per_month, number_of_reviews, price) %>% 
+  cor(use = "na.or.complete")
+
+```
+
+The data shows that Airbnb does not receive many reviews every month for the Stockholm listings. The median is 0.69 and the mean is 1.34. This is expected as most people do not make the effort to go back and review a place, good or bad, unless it was exceptionally good or exceptionally bad.
+
+After calculating the correlation coefficients, it is clear that the `number_of_reviews` is positively correlated with the `reviews_per_month.` What is interesting is that correlation between price and both `number_of_reviews` and `reviews_per_month.` The correlations were calculated to be -0.069 and -0.114 respectively. Although it is negatively correlated, the coefficients are very very low, meaning price is not really effected by the `number_of_reviews` and `reviews_per_month.` This could be because there is no way to ascertain whether the reviews are good or bad, so a high number of reviews doesn't mean a certain airbnb is better, which would lead the price to be higher. However, it could also mean that the more information people have about an apartment in terms of reviews, the less leeway hosts have in pricing, thus driving prices down.
+
+### Review scores
+
+We have multiple variables that give information about the rating of each listing, including `review_scores_rating`, `review_scores_accuracy`, `review_scores_cleanliness`, etc. As we expect these reviews to be positively correlated, we will look at their distribution and correlation in more detail.
+
+```{r}
+listings_clean %>% 
+  select(review_scores_rating, review_scores_accuracy,
+         review_scores_cleanliness, review_scores_communication,
+         review_scores_checkin, review_scores_location,
+         review_scores_value) %>% 
+  ggpairs()
+```
+
+We can see from the density plots of the ratings variables that most of the ratings are in the very upper end, i.e. 4.5 or above. From the above scatterplots and correlation coefficients we can see that the different rating scores are all highly correlated. This is why we will most probably only make use of one rating score in our later regressions so that we avoid collinearity. In our opinion, it makes most sense to thereby use the variable `review_scores_rating` as this seems to be the overall rating of the listing. Let us look at its correlation with the price.
+
+```{r, warning = FALSE}
+#scatterplot of price and review_scores_rating
+ggplot(listings_clean, aes(x = review_scores_rating, y = price)) +
+  geom_point(color = "purple") + 
+  #use logarithmic scale
+  scale_y_log10() +
+  labs(title = "Price and scores review",
+       y = "Price",
+       x = "Review Rating") +
+  theme_bw()+
+  NULL
+
+#calculate correlation coefficient
+listings_clean %>% 
+  select(review_scores_rating, price) %>% 
+  cor(use = "na.or.complete")
+
+```
+
+By plotting the price and the reviews' scores, we cannot have a clear view about their relationship. It seems that most of the apartments are rated above 4.5. However, even in few cases where the rating was 0, the apartment still had as high a price as that of 5/5 rated AirBnBs. We must not forget that these are reviews by users of the internet, meaning that even though most of the times these can be helpful, there will always be people that just want to "have fun" so they give 0/5 reviews for no specific reason. Be that as it may, although we would expect apartments with higher ratings to have a higher price, this is not always the case. Therefore given that this variable is not very informative, we want to create a new variable called `top_reviewed` that will be `yes` if the `review_scores_rating` is higher or equal to 4.8 and `no` otherwise. We will also check whether there is a significant difference in price between the two groups.
+
+```{r}
+#create new variable top_reviewed
+listings_clean <- listings_clean %>% 
+  mutate(top_reviewed = ifelse(review_scores_rating >= 4.8, "yes", "no"))
+
+#check distribution of top_reviewed variable
+listings_clean %>% 
+  filter(!is.na(top_reviewed)) %>% 
+  count(top_reviewed) %>% 
+  mutate(percent = round(n/sum(n)*100, 2)) %>% 
+  arrange(desc(percent))%>% 
+  kable(caption = "Summary of whether the listing is top reviewed",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+
+#check whether difference in price and calculate CI
+favstats(price~top_reviewed, data = listings_clean) %>% 
+  mutate(SE = sd/sqrt(n),
+         t_crit = qt(0.975, n-1),
+         margin_of_error = t_crit * SE,
+         lower = mean - margin_of_error,
+         upper = mean + margin_of_error) %>% 
+  kable(caption = "Statistics on whether the listing is top reviewed",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#conduct hypothesis test to see whether difference in price between the 2 groups
+t.test(price~top_reviewed, data = listings_clean)
+```
+
+We now have a clearer picture of the data. Although we could not infer much from the entire distribution of the rating scores, by dividing them into the above categories we can safely conclude that apartments with ratings higher than 4.8 have higher prices on average. Both categories are left skewed since the mean is larger than the median and have large standard diviations, meaning that they are spread-out. This makes sense, since we saw before that prices might vary a lot for one rating, with both groups having many extreme values pushing the mean higher. [Interpretation of CI & t.test]
+
+### Instant booking
+
+One logical variable that might influence the price is `instant_bookable` that indicates whether the listing can be booked immediately or not. Let us first take a look at the distribution of listings according to this variable and afterwards investigate its relationship with the price.
+
+```{r}
+#summary statistics of price based on instant_bookable variable
+favstats(price~instant_bookable, data = listings_clean) %>% 
+  kable(caption = "Statistics on whether the listing can be booked immediately",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#plot distribution of instant_bookable variable
+ggplot(listings_clean,
+       aes(y = factor(instant_bookable,
+                      levels = c(TRUE, FALSE)),
+           fill = instant_bookable)) +
+  geom_bar() +
+  labs(title = "Distribution of listings based on instant bookable option",
+       x = "Number of listings",
+       y = "Instant bookable") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  NULL
+
+#plot distribuion of price basedon two variables
+ggplot(listings_clean,
+       aes(x = instant_bookable, y = price,
+           fill = instant_bookable,
+           alpha = 0.5)) +
+  geom_boxplot() +
+  labs(title = "Distribution of prices according to instantly bookable option",
+       x = "Price per night",
+       y = "Density") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  NULL
+
+```
+
+Almost 3/4 of the properties are not instantly bookable. The boxplots of the two groups are both right skewed. It is interesting that the instantly bookable group has more outliers in the higher end than the group that is not instantly bookable. The output also shows that those listings that don't accept instant bookings have a considerably higher mean and median, as well as a lower standard deviation - but this could be a result of the big difference in the number of observations. One would assume that most of the instantly bookable airbnbs are actually cheaper as the hosts are not vetting the guests. The reason for a higher mean and median is likely a function of those reasons outlined above, i.e higher price drawing wealthier guests who tend not need to be vetted. 
+
+
+### Neighbourhood
+
+There are three different variables, namely `neighbourhood`, `neighbourhood_cleansed` and `neighbourhood_group_cleansed`, that tell us about the neighbourhood each listing is located in. Let us look at them in more detail first.
+
+```{r}
+
+listings_clean %>% 
+  select(neighbourhood, neighbourhood_cleansed, neighbourhood_group_cleansed) %>% 
+  skim() %>% 
+  kable(caption = "Brief summary on neighborhood-related variables",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+```
+
+Based on the output above we can conclude that the most informative variable is `neighbourhood_cleansed` as it does not contain any missing values compared to the other three variables that have more than 1,000 `NAs`, with `neigbourhood_group_cleansed` even consisting only of `NAs`. The `n_unique` variable from the output shows that there are 14 different neighbourhoods. This is a little bit too much, which is why we want to group this variable into a smaller number of categories. We therefore looked at the different neighbourhoods included and identified 6 categories, which was subsequently reduced to 5 as one different fit any of the geographic attributes of neighbourhoods observed. We select the categories using a simple geographic check and so the consolidate groupings are:
+
+- Central: Kungsholmens, Norrmalm, Ostermalm, Sodermalm 
+- North: Rinkeby-Tensta, Hosselby-Valingby, Spanga-Tensta
+- South:, Enskede-Aesta-Vantors, Farsta, Hagersten-Liljeholmens
+- West: Bromma, Skarholmens 
+- Very South: Alvsjo, Skarpnack 
+
+```{r}
+#check different neighborhoods given
+unique(listings_clean$neighbourhood_cleansed) %>% 
+  kable(caption = "There are these neighborhoods that have AirBnB listings in Stockholm",
+        align = "c") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T) %>% 
+  column_spec(1, width = "40%")
+
+#create vectors with regions included in bigger categories
+Central <- c("Kungsholmens", "Norrmalms", "Östermalms", "Södermalms")
+North <- c("Rinkeby-Tensta", "Hässelby-Vällingby", "Spånga-Tensta")
+South <- c("Enskede-Årsta-Vantörs", "Farsta", "Hägersten-Liljeholmens")
+West <- c("Skärholmens", "Bromma")
+VerySouth <- c("Älvsjö", "Skarpnäcks")
+
+#create new variable city_area
+listings_clean <- listings_clean %>% 
+  mutate(city_area = ifelse(neighbourhood_cleansed %in% Central, "Central",
+                     ifelse(neighbourhood_cleansed %in% North, "North",
+                     ifelse(neighbourhood_cleansed %in% South, "South",
+                     ifelse(neighbourhood_cleansed %in% West, "West",
+                     "VerySouth")))))
+
+#check new variable
+listings_clean %>% 
+  count(city_area) %>% 
+  mutate(percent = round(n/sum(n)*100, 2)) %>% 
+  arrange(desc(percent)) %>% 
+  kable(caption = "Summary of which region the property is located",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+
+```
+
+We can see that most of the listings are located in the central region, followed by the South. We can now continue to investigate whether there is a price difference.
+
+```{r}
+#summary statistics of price basedon city area
+favstats(price ~city_area, data = listings_clean) %>% 
+  kable(caption = "Statistics on price of property in different regions",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#plot distribution of price for city areas
+ggplot(listings_clean,
+       aes(x = city_area, y = price,
+           fill = city_area)) +
+  geom_boxplot() +
+  #facet_wrap(~city_area, scales = "free") +
+  labs( 
+    title = "Distribution of price by area",
+    x = "Price",
+    y = "Density",
+    fill = NULL)+
+  theme(legend.position = "none") +
+  NULL
+```
+
+By re-categorising the dataset into 5 neighbourhoods locations, we can plot the prices to see if there is any relationship. As is the case with most cities, centrally located apartments tend to have the highest prices. Indeed, in Stockholm we find that AirBnBs in Central areas have higher prices on average with many apartments costing up to 5,000 SEK. This is most likely related to the fact that most of the attractions tourists want to visit are in the center of Stockholm. Therefore it makes sense that most AirBnBs are in that area, since they are most profitable for owners. Another interesting finding is that AirBnB prices tend to be higher on average the furhter South the apartment is located, with apartments in the West also having high prices, although we have a small sample of them.
+
+### Amenities
+
+The variable `amenities` lists all the extra features each apartment/house offers its guests, such as WiFi, kitchen, hot water and heating. These features are mostly desired by guests and therefore we believe the availability of amenities could be an important factor of listing prices. Since the `amenities` variable is currently given as a string list and range of items is quite extensive, we convert it into a quantifiable variable and our approach is to count how many amenities a listing has.
+
+```{r}
+#count the number of elements in split amenities list
+listings_clean <- listings_clean %>% 
+  mutate(number_of_amenities = lengths(strsplit(amenities,",")))
+
+#show number_of_amenities
+listings_clean %>% 
+  select(amenities, number_of_amenities) %>% 
+  skim() %>% 
+  kable(caption = "Amenities list and number of amenities",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+```
+
+Let's take a look at how `number_of_amenities` is distributed across all listings and also calculate its correlation coefficient with the price in order to get an idea of its relevance.
+
+```{r}
+#summary statistics of number_of_amenities
+favstats(~number_of_amenities, data = listings_clean) %>% 
+  kable(caption = "Statistics on number of amenities",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#distribution of number_of_amenities
+ggplot(listings_clean, aes(number_of_amenities)) +
+  geom_histogram(fill = "purple",
+                 color = "black")+
+  labs( 
+    title = "Distribution of number of amenities",
+    x = "Number of amenities",
+    y = NULL)+
+  theme_bw()+
+  NULL
+
+#calculate correlation between number_of_amenities and price
+listings_clean %>% 
+  select(number_of_amenities, price) %>% 
+  cor(use = "na.or.complete")
+
+```
+
+Different from what we expected, `number_of_amenities` seem to have little correlation with listing prices. We think this might be because the `amenities` column in the original dataset is not informative enough: some host may not bother to put all amenities they have on the listing page, while some others might exaggerate by including some insignificant items such as shampoo, as we have seen in the above table where some houses and apartments only have single-digit amenities and some others have more than 50. This might also explain the high variablity of the number of amenities as shown in the above histogram.
+
+Nonetheless, we might still include the `number_of_amenities` into one of our models as it could intuitively influence demand on each listing.
+
+### Host characteristics
+
+As a last step, we also want to look at the different characteristics of the people offering their apartments and houses. We identified the variables `host_response_time`, `host_response_rate`, `host_acceptance_rate`, `host_is_superhost` and `host_listings_count` to be of potential interest. Let us first have a more detailed look at these variables.
+
+```{r}
+
+listings_clean %>% 
+  select(host_response_time, host_response_rate, host_acceptance_rate, host_is_superhost, host_listings_count) %>% 
+  skim() %>% 
+  kable(caption = "Brief summary on host-related variables",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+```
+
+As we can see from the output above, the two variables `host_response_rate` and `host_acceptance_rate` that should be numeric variables are given as character variables. We will therefore change them before we continue with our analysis.
+
+```{r, warning=FALSE}
+#change format of variables to numeric
+listings_clean <- listings_clean %>% 
+  mutate(host_response_rate = ifelse(host_response_rate != "N/A", 
+                                     parse_number(host_response_rate),
+                                     NA),
+         host_acceptance_rate = ifelse(host_acceptance_rate != "N/A", 
+                                     parse_number(host_acceptance_rate),
+                                     NA))
+
+typeof(listings_clean$host_response_rate)
+typeof(listings_clean$host_acceptance_rate)
+
+```
+
+One variable that stands out to us is the logical variable `host_is_superhost`. According to [AirBnB's website](https://www.airbnb.co.uk/help/article/828/what-is-a-superhost), superhosts are experienced hosts who provide a shining example for other hosts, and extraordinary experiences for their guests. Therefore, we would expect listings of superhosts to be more expensive than those of non-superhosts. Let us first check how many listings of superhosts we have in our dataset and then see whether there is a difference in the price of these listings.
+
+```{r}
+# count number of superhosts
+listings_clean %>% 
+  count(host_is_superhost) %>% 
+  mutate(percent = round(n/sum(n) * 100, 2)) %>% 
+  arrange(desc(percent)) %>% 
+  kable(caption = "Summary of whether host is superhost",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+
+favstats(price ~host_is_superhost, data = listings_clean) %>% 
+  kable(caption = "Statistics on whether host is superhost",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#plot price distribution based on superhosts
+listings_clean %>% 
+  filter(!is.na(host_is_superhost)) %>% 
+  ggplot(aes(x = host_is_superhost, y = price,
+             fill = host_is_superhost,
+             aes = 0.4)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "Density plot of price for superhosts and non-superhosts",
+       x = "Price",
+       y = NULL) +
+  NULL
+
+```
+
+Surprisingly, apartments that do not have superhosts seem to have higher prices on average. In fact, both the mean and the median of those that do not have superhost is higher than that of those that do. Even the single maximum price of AirBnB does not have a superhost. Therefore it seems that the relationship between having a superhost and having a higher price is inversely related.
+
+One thing we need to note though is that only 21% of the apartments have a superhost, a fairly small sample. Perhaps it could be the case that flat hosts just begun superhosting in hopes of getting a higher price for the flat. Conversely, those that do not superhost might already have high bids so they do not need to offer this to their customers to keep the price high. We will proceed with calculating confidence intervals for the superhosts. Our null hypothesis is that there is no difference in price between the two groups.
+
+```{R}
+#calculate CIs for price of superhosts and non-superhosts
+listings_clean_CI <- listings_clean %>% 
+  drop_na(host_is_superhost) %>% 
+  group_by(host_is_superhost) %>% 
+  summarise(
+    mean_price = mean(price),
+    n = n(),
+    SE = sd(price)/sqrt(n),
+    t_critical = qt(0.975, (n-1)),
+    lower = mean_price - t_critical * SE,
+    upper = mean_price + t_critical * SE
+  ) 
+
+listings_clean_CI %>% 
+  kable(caption = "Statistics on whether host is superhost",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+We can tell that the the CIs overlap, so we will test whether the difference in price between the flats that have superhost and those that do not is significant.
+
+```{r}
+t.test(price ~ host_is_superhost, data = listings_clean)
+```
+
+Since the p-value is larger than 0.05 we cannot reject the null hypothesis. Therefore, the difference in price between these two groups is not statistically significant and the variable `host_is_superhost` will most likely not be included in the final model.
+
+As a next step, let us look at the numeric variables we have for the hosts and check whether there is a certain correlation among them and price. We do this again with the help of the `ggpairs()` function.
+
+```{r}
+listings_clean %>% 
+  select(host_response_rate, host_acceptance_rate, host_listings_count, price) %>% 
+  ggpairs()
+```
+
+From the above output we can see that, whiel the acceptance rate of hosts and response rate are correlated with each other, the correlations of the three variables with the price are all extremely close to 0. This is why we will not look at them in more detail, also because we do not want to overfit our model later with too many variables.
+
+We still want to have a look at the categorical variable `host_response_time` and check in a denisty plot whether there is a difference in response time among the different categories.
+
+```{r}
+#bring all NA values into consistent format
+listings_clean <- listings_clean %>%
+  mutate(host_response_time = ifelse(host_response_time == "N/A", NA, host_response_time))
+
+#count different response times 
+listings_clean %>% 
+  filter(!is.na(host_response_time)) %>% 
+  count(host_response_time) %>% 
+  mutate(percent = round(n/sum(n)*100, 2)) %>% 
+  arrange(desc(percent)) %>% 
+  kable(caption = "Summary of host response time",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                full_width = F) %>% 
+  row_spec(0, bold = T)
+```
+
+We can see that more than half of the hosts respond within 1 hour. We are curious whether the price of those listings with fast-responding hosts is different, so will plot the distribution of price, including the confidence intervals of the mean price per category, based on the four identified categories.
+
+```{r}
+listings_clean %>% 
+  filter(!is.na(host_response_time)) %>%
+  ggplot(aes(x = price, fill = host_response_time)) +
+  geom_density() +
+  facet_wrap(~host_response_time) + 
+  NULL
+
+#look at distribution of price across response times and calculate CIs
+favstats(price ~ host_response_time, data = listings_clean) %>% 
+  mutate(SE = sd/sqrt(n),
+         t_crit = qt(0.975, n-1),
+         margin_of_error = t_crit * SE,
+            lower = mean - margin_of_error,
+            upper = mean + margin_of_error) %>% 
+  kable(caption = "Statistics on price and host response time",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+```
+
+All five categories seem to have similar prices, with the means ranging from 1129 - 1311 SEK. Although, there is somewhat of an inverse relationship between price and time to reply, we find that all CIs overlap. Thus we cannot reject the null hypothesis that the difference in price between the five groups is on average zero. Therefore, we also expect that this variable will be useful in our regression analysis.
+
+## Feature selection and correlation between variables
+
+Now that we have investigated all the features that might be of interest for predicting the price of a 4-night stay for 2 people in Stockholm, we can reduce the number of features we will include in our regression models The variables we consider as potential explanatory variables for price of an AirBnB in Stockholm are:
+
+- `prop_type_simplified`
+- `accommodates`
+- `room_type`, `bathrooms`, `bedrooms`, `beds`, `number_of_amenities`
+- `availability_30`
+- `number_of_reviews`, `reviews_per_month`,
+- `reviews_scores_rating`, `reviews_30_plus`, `top_reviewed`
+- `instant_bookable`
+- `city_area`
+- `host_is_superhost`, `host_response_time` (both rather unlikely to have effect)
+
+Before we continue with building our model, we will first look at the correlation among all the numeric variables we have. We do this with the help of `ggpairs()`.
+
+```{r}
+#select variables to include in ggpairs()
+listings_clean %>% 
+  dplyr::select(price, accommodates, bathrooms, bedrooms, beds,
+                number_of_amenities, availability_30, number_of_reviews,
+                reviews_per_month, review_scores_rating) %>% 
+  ggpairs()
+```
+
+From the above output we can see that the majority of variables does not have a very strong linear relationship with the price. The variable with the highest correlation with the price is the number of `bedrooms` (0.412), followed by the number of people each apartment/house `accommodates` (correlation coefficient of 0.383) and the number of `beds` (0.299). Since these variables are highly correlated with each other, however, (correlation coefficient of 0.760 for `accommodates` and `bedrooms` and 0.739 for `bedrooms` and `beds`) we will need to be careful when we include them in our model as we want to avoid any collinearity. While the correlation coefficients between the price and some of the variables may not be very strong, they might still turn out to be valuable predictors in our model later as the correlation might still be significant. We see from the above scatterplots that many of the variables are not correlated at all (e.g., `bed` and `reviews_per_month`), which is a good thing as we want to avoid collinearity. Let us have a look at whether we can find a stronger linear relationship between the price and other variables by accounting for the categorical variable `city_area` that contains information about the location of each listing.
+
+```{r}
+ggplot(listings_clean, aes(x = accommodates, y = price)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = "lm") +
+  facet_wrap(~city_area) +
+  theme_bw() +
+  labs(title = "Relationship between people capacity of listing and price split by geographic area",
+       x = "People capacity of listing",
+       y = "Price") + 
+  NULL
+```
+
+From the above we can see that the geographic area of the listing does not seem to be a condition for the positive relationship between the capacity of the listing (`accommodates` variable) and its price. We have not only tested such conditional relationship for the `accommodates` variable, but also for all other numeric variables and also changed the categorical variables that might pose a condition. We were not able to find any outstanding conditional relationship. Only for the type of the property, it seems that **Entire rental units** and **Other** show a higher positive correlation between the capacity and price than the other four types as can be seen below.
+
+```{r}
+
+ggplot(listings_clean, aes(x = accommodates, y = price)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = "lm") +
+  facet_wrap(~prop_type_simplified) +
+  theme_bw() +
+  labs(title = "Relationship between people capacity of listing and price split by property type",
+       x = "People capacity of listing",
+       y = "Price") + 
+  NULL
+
+```
+
+# Mapping
+
+Before we start with building our model, let us include an interactive map of Stockholm that includes the AirBnB listings of Stockholm where `minimum_nights` is less than equal to four (except the very high outliers and those with a price of 0 SEK that we removed above). This will allow us to get an overview of the spatial distribution of AirBnB rentals. For this visualisation we use the `leaflet` package, which includes a variety of tools for interactive maps.
+
+```{r}
+
+#set continuous color palette with log_price
+pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain = listings_clean$price)
+
+leaflet(data = listings_clean,
+        width = "100%",
+        height = '300px') %>% 
+  addTiles() %>% 
+  addProviderTiles("OpenStreetMap.Mapnik") %>% 
+  addCircleMarkers(lng = ~longitude, 
+                   lat = ~latitude, 
+                   radius = 1, 
+                   color = ~pal(price),
+                   fillOpacity = 0.5, 
+                   
+                   #set an informative popup interface
+                   popup = paste("ID:", listings_clean$id, "<br>",
+                                 "Room type:", listings_clean$room_type, "<br>",
+                                 "Accommodates:", listings_clean$accommodates, "people", "<br>",
+                                 "Price (in SEK):", listings_clean$price, "<br>",
+                                 "URL:", listings_clean$listing_url),
+                   label = ~name) %>% 
+  
+  #add legend to show how colors differ with prices
+  addLegend(position = "bottomright",
+            pal = pal,
+            values = ~price,
+            title = "Price")
+```
+
+
+# Model selection and validation
+
+Now that we have identified our features, have a good understanding of the relationships among them and the geographical outlay of the listings in Stockholm, let us start with building our model. The aim is to predict the price of a 4-night stay for 2 people in Stockholm. In our analysis, we include all apartments/houses/rooms that have capacity for more than 1 person, meaning that houses that fit 10 people will also be considered in order to predict the price.
+
+## Preparation
+
+Since we do not need all the variables that are contained in the dataset `listings_clean`, we will first condense our dataset so that it only includes the variables that we might use as explanatory variables. We call this dataset `listings_condensed`. In addition, since we want to predict the price for two people traveling and staying together in one apartment/house, we will clean the dataframe from all listings that do only fit one person. We also create a new variable called `price_4_nights` that calculates the price for the apartment/house for four nights and will be the dependent variable in our regression analysis.
+
+```{r}
+#condense the dataset
+listings_condensed <- listings_clean %>% 
+  select(prop_type_simplified, accommodates, room_type, bathrooms, bedrooms, beds, number_of_amenities,
+         availability_30, number_of_reviews, reviews_per_month, review_scores_rating, reviews_30_plus,
+         top_reviewed, instant_bookable, city_area, host_is_superhost, price, host_response_time) %>% 
+  
+  #remove those listings that only accommodate one person
+  filter(accommodates >= 2) %>% 
+  
+  #drop all rows with any NA values
+  drop_na() %>% 
+  
+  #calculate price_4_nights
+  mutate(price_4_nights = price*4)
+
+#take look at condensed dataset
+skim(listings_condensed) %>% 
+  kable(caption = "Brief summary on all variables in our condensed dataset",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%", height = "400px")
+```
+
+Let us have a look at the distribution of the `price_4_nights` variable first.
+
+```{r}
+#summary statistics for price_4_nighs
+favstats(~price_4_nights, data = listings_condensed) %>% 
+  kable(caption = "Statistics on target cost",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#density plot for price_4_nights
+ggplot(listings_condensed, aes(x = price_4_nights)) +
+  geom_density()
+
+```
+
+Despite some really expensive outliers, we can see from the above graph that most of the AirBnB listings for a four-night stay in Stockhom are below SEK 5,000. This is also confirmed by the the mean price of 4,744 SEK. We believe the distribution would provide more insights if we transform `price_4_nights` to a logarithmic scale.
+
+```{r}
+#transform price_4_nights to log scale
+listings_condensed <- listings_condensed %>% 
+  mutate(log_price_4_nights = log(price_4_nights))
+
+#calculate summary statistics for new variable
+favstats(~log_price_4_nights, data = listings_condensed) %>% 
+  kable(caption = "Statistics on logged target cost",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#density plot for log_price_4_nights
+ggplot(listings_condensed, aes(x = log_price_4_nights)) +
+  geom_density()
+
+```
+We can observe from the above graph that the distribution of `log_price_4_nights` is very similar to a normal distribution, with its mean and median both around 8.26, implying a cost of $e^{8.26}=3866$ SEK for two people staying for 4 nights. `log_price_4_nights` is approximately normally distributed, which gives it more favourable statistical attributes and better interpretability than `price_4_nights`. Therefore, we will use `log_price_4_nights` as our dependent variable in our regression models.
+
+
+## Model 1
+
+Our first regression model will have the following explanatory variables: `prop_type_simplified`, `number_of_reviews`, and `review_scores_rating`. We believe these three variables that contain information about the type of the property, how many reviews the listing has got and about the average rating, are what most guests would check and use in deciding on the accommodation for their stay.
+
+```{r}
+#create a regression model
+model1 <- lm(log_price_4_nights ~
+               prop_type_simplified +
+               number_of_reviews +
+               review_scores_rating,
+             data = listings_condensed)
+
+#display the result of the model
+model1 %>%
+  tidy() %>% 
+  kable(caption = "Model 1 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model1 %>% 
+  glance() %>% 
+  kable(caption = "Model 1 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+  
+
+```
+
+Looking at our model, we can see that not all of the variables are significant. [Interpretation for coefficients of prop_type_simplified, number_of_reviews, review_scores_rating].
+
+We can also see that our first model is not very satisfying in explaining the differences in `log_price_4_nights` because it has an adjusted $R^2$ of only approximately 0.21 and includes insignificant explanatory variables.
+
+Even though our first model is not very reliable, we still want to run diagnostic plots as they will give us an idea of whether there exist factors we need to account for in order to better explain the price. We do this with the help of the `autoplot` function.
+
+```{r}
+#plot residuals
+autoplot(model1) +
+  theme_bw()
+```
+
+From the residuals vs fitted plot we can see that residuals are not randomly distributed which indicates that there is some pattern that is currently not accounted for with our variables. The scale-location plot shows us that the variability is not constant. In addition, the normal q-q plot clearly shows that our residuals do not follow a normal distribution. This model therefore does not fit into LINE assumptions and we should add more variables to the model.
+
+Further, we want to check if there is colinearity between the explanatory variables in our first model. We use `vif()` to achieve that.
+
+```{r}
+
+#calculate VIF of the model
+car::vif(model1) %>% 
+  kable(caption = "VIF of model 1",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+
+```
+
+The 3 explanatory variables at hand are not correlated to each other as all VIF scores are will below 5. There is thus no need to be concerned about colinearity at the moment.
+
+## Model 2
+
+As a next step, we think that the `room_type` could be another significant predictor for the price of an AirBnB listing in Stockholm. People should be willing to pay more for an entire apartment compared to a shared room. To verify this, we include `room_type` into our second model.
+
+```{r}
+#create second regression model with all variables from model 1 + room_type
+model2 <- lm(log_price_4_nights ~
+               prop_type_simplified +
+               number_of_reviews +
+               review_scores_rating +
+               room_type,
+             data = listings_condensed)
+
+#display result of model
+model2 %>%
+  tidy() %>% 
+  kable(caption = "Model 2 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model2 %>% 
+  glance() %>% 
+  kable(caption = "Model 2 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+We can see adjusted $R^2$ increases by 0.07 and the new categorical variable `room_type` is significant. [Interpretation for coefficient of room_type]
+`number_of_reviews` and `review_scores_rating` are still insignificant, so we may want to replace them with other explanatory variables in a later model.
+
+Again, we want to look at the second model's residuals and VIF.
+
+```{r}
+#plot residuals
+autoplot(model2) +
+  theme_bw()
+
+#calculate VIF of model
+car::vif(model2) %>% 
+  kable(caption = "VIF of model 2",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+
+```
+Compared to our first model, the residual vs. fitted and the normal q-q plot have not really changed, which means that residuals are not random and and our second model does thus also not capture all variables that contribute to the price formation of Stockholm's AirBnB listings. Unfortunately, we also observe a high level of multi-collinearity between `prop_type_simplified` and `room_type`. [Interpretation for collinearity]
+
+Considering `room_type` has higher t-value as shown above and offers better intuitive explanation than `prop_type_simplified`, we decide to discard the latter in our further modelling.
+
+## Model 3
+
+We think it would be great if we include some variables that represent the availability of resources in the property, including how many people it fits, how many rooms and beds it has and how many amenities it has. Therefore, we add the variables `accommodates`, `bathrooms`, `bedrooms`, `beds` and `number_of_amenities` to our model.
+
+Considering `number_of_reviews` and `review_scores_rating` have produced insignificant coefficients in our first two models, we decide to replace them with the two logical variables we created to capture AirBnB review differences, `reviews_30_plus` that indicates whether a listing has received 10 reviews or more and `top_reviewed` that shows whether a listing has a rating of at least 4.5. In addition, we also add the number of `reviews_per_month` as this is a better indicator of the frequency of reviews and might thus also influence price as frequently reviewed listings might gain more attention among customers.
+
+```{r}
+#create model based on significant variables from model 2 and new variables
+model3 <- lm(log_price_4_nights ~
+               room_type +
+               reviews_30_plus +
+               top_reviewed +
+               reviews_per_month +
+               accommodates +
+               bathrooms +
+               bedrooms +
+               beds +
+               number_of_amenities,
+             data = listings_condensed)
+
+#display result of model
+model3 %>%
+  tidy() %>% 
+  kable(caption = "Model 3 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model3 %>% 
+  glance() %>% 
+  kable(caption = "Model 3 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+Our adjusted $R^2$ in the third model has gone above 0.4, which means that our model explains decisively more in the variability of price than the former two models. Nevertheless, we can see that some of the variables we added are not significant. Of the new variables [Interpretation for coefficients of all variables except room_type and why not significant].
+
+With the higher adjusted $R^2$ value we are now curious to see whether the residuals of our model are now more random than for the previous two models. We also check again for colinearity with the `vif` function.
+
+```{r}
+#display residuals
+autoplot(model3) +
+  theme_bw()
+
+#calculate VIF of model 3
+car::vif(model3) %>% 
+  kable(caption = "VIF of model 3",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+```
+
+We are glad to see that residuals are clearly more randomly distributed than what they appeared to be in the previous two models except for one outlier in the right end. The VIF output also shows that we do not have any significant multi-collinearity at the moment. We had expected to detect some collinearity between `accommodates`, `bedrooms` and `bed` as we saw that they were relatively highly correlated in our explanatory data analysis. While their VIF is below 5 for all of these variables, `bed` is also an insignificant variable, so we will discard it in our next model in any case.
+
+## Model 4
+
+The next thing we want to incorporate into our model is `city_area`, a variable that gives us information about each listing's geographic location in Stockholm. We also want to remove some insignificant variables from model 3, including `reviews_30_plus`, `reviews_per_month`, `bathrooms` and `beds`.
+
+```{r}
+#create model with new variable city_area and discarding reviews variables and bathrooms
+model4 <- lm(log_price_4_nights ~
+               room_type +
+               top_reviewed +
+               accommodates +
+               bedrooms +
+               number_of_amenities +
+               city_area,
+             data = listings_condensed)
+
+#display results of model
+model4 %>%
+  tidy() %>% 
+  kable(caption = "Model 4 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model4 %>% 
+  glance() %>% 
+  kable(caption = "Model 4 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+Our adjusted $R^2$ increases further, now to more than 50\%, which means we are right about the fact that `city_area` should have an impact on the prices of AirBnB listings in Stockholm. [Interpretation for coefficient of city_area]
+
+The `number_of_amenities` variable in the meantime has become insignificant in the new model, in line with what we have inferred in the EDA section. Let us again check the distribution of residuals as well as the VIF scores for the variables included in our fourth model.
+
+```{r}
+#display residuals
+autoplot(model4) +
+  theme_bw()
+
+#calculate VIF for model 4
+car::vif(model4) %>% 
+  kable(caption = "VIF of model 4",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+```
+Looking at the residuals vs. fitted plot, our residuals now seem to be randomly distributed. The normal q-q plot, however, still indicates that the residuals are not perfectly normally distributed. The VIF scores are all well below 5. Therefore, our fourth model appears to be free from undesirable conditions like collinearity or heteroscedasticity.
+
+
+## Model 5
+
+Given that we live in an area where we cannot plan our vacation too far in advance, we also want to see if the property's (short-term) availability is something that would make it more appealing to guests and thus drive up prices. `instant_bookable` and `availability_30` will be the next two new variables we add to our model. Since the `number_of_amenities` from the previous model showed little significance for the prices, we will also exclude it from our model this time.
+
+```{r}
+#create model with availability information and exclude number_of_amenities
+model5 <- lm(log_price_4_nights ~
+               room_type +
+               top_reviewed +
+               accommodates +
+               bedrooms +
+               city_area +
+               instant_bookable +
+               availability_30,
+             data = listings_condensed)
+
+#display results of model
+model5 %>%
+  tidy() %>% 
+  kable(caption = "Model 5 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model5 %>% 
+  glance() %>% 
+  kable(caption = "Model 5 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+While the adjusted $R^2$ has climbed up further to now more than 55.9\%, one of our new variables, namely `instant_bookable` is not significant as it only has a p-value far above our significance level of 5\%. However, we can see that the variable `availability_30` is significant. [Interpretation for coefficient of availability_30]
+
+Given that we have added new variables to our model, we are concerned of overfitting which is why we again check the residual plots and calculate the VIF scores for `model5`.
+
+```{r}
+#display residuals
+autoplot(model5) +
+  theme_bw()
+
+#calculate VIF for model 5
+car::vif(model5) %>% 
+  kable(caption = "VIF of model 5",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+```
+
+Again, the model has favorable diagnostic plots and VIFs, meaning that the selected variables seem to explain price differences for AirBnB listings in Stockholm quite well.
+
+## Model 6 and final model 7
+
+One last variable we want to add to the model is the interesting characteristic about the host we have identified in our explanatory data analysis earlier, namely `host_is_superhost`. Our analysis above showed that it is likely that superhosts have a premium on their property listing prices. In terms of improvement to model 5, we will discard the variable `instant_bookable` which was not significant.
+
+```{r}
+#create model 6 with host_is_superhost as additional variable and remove instant_bookable
+model6 <- lm(log_price_4_nights ~
+               room_type +
+               top_reviewed +
+               accommodates +
+               bedrooms +
+               city_area +
+               availability_30 +
+               host_is_superhost +
+               host_response_time,
+             data = listings_condensed)
+
+#display results of model
+model6 %>%
+  tidy() %>% 
+  kable(caption = "Model 6 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model6 %>% 
+  glance() %>% 
+  kable(caption = "Model 6 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+The regression result goes against our intuition as we could not improve our model with the above steps. [Interpretation of why host_is_superhost is insignificant]
+
+If we discard `host_is_superhost` from our sixth model, we have our final model that should have explanatory variables that are all significant and an adjusted $R^2$ higher than what we have in model 6. Before we do that however, we will check the results of the model that includes all explanatory variables we thought to be worth looking at and compare the results to our most recent model.
+
+```{r}
+#compare recent model to model that includes all variables
+model_all <- lm(log_price_4_nights ~ .-price_4_nights -price, data = listings_condensed)
+
+#display results of model with all variables
+model_all %>%
+  tidy() %>% 
+  kable(caption = "Model_all coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model_all %>% 
+  glance() %>% 
+  kable(caption = "Model_all fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+#calculate VIF for model_all
+car::vif(model_all) %>% 
+  kable(caption = "VIF of model_all",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(height = "250px")
+
+```
+
+We can see from the output above that the $R^2$ value is not very much higher for the model that includes all variables, but the VIF score for `prop_type_simplified` and `room_typ` is well above 5. We have accounted for this in our prior models already. One variable that suddenly stands out but was insignicant in prior models is `reviews_per_month` that gives the number of reviews the listing get per month. Given that our model 6 (less the `host_is_superhost` variable) controls for other variables, let us see whether there is now a significant effect for `reviews_per_month` and see whether this improves our final model 7.
+
+
+```{r}
+#create model 7 which is model 6 less host_is_superhost_variable including 
+model7 <- lm(log_price_4_nights ~
+               room_type +
+               top_reviewed +
+               accommodates +
+               bedrooms +
+               city_area +
+               availability_30 +
+               reviews_per_month,
+             data = listings_condensed)
+
+#display results of model
+model7 %>%
+  tidy() %>% 
+  kable(caption = "Model 7 coefficients",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+model7 %>% 
+  glance() %>% 
+  kable(caption = "Model 7 fit",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+From the output above, we can see that adding the `reviews_per_month` variable, which now is significant, improves our $R^2$ value further and brings it to 57.04\%. However, we can see that the number of reviews per month decreases the price, which might seem counterintuitive. We would explain this relationship in the way that more reviews also mean that more somewhat negative experiences or remarks are mentioned and that people looking at the apartment/house have thus more information about the accommodation. With this, the hosts might be somewhat forced to slightly decrease the price as they cannot pretend that their offer is 100\% perfect anymore. Due to its significance, we will keep the number of `reviews_per_month` as an explanatory variable, but check for multicollinearity and the distribution of residuals first.
+
+```{r}
+#display residuals
+autoplot(model7) +
+  theme_bw()
+
+#calculate VIF for model 7
+car::vif(model7) %>% 
+  kable(caption = "VIF of model 7",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T)
+
+listings_condensed %>% 
+  filter(price > 8000) %>% 
+  kable(caption = "Listings with price higher than 8000 SEK per night",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+```
+
+Even though our residuals are not perfectly normally distributed, this model has a result that we are very pleased with compared to the other models. Residuals are random as shown in the residual vs. fitted graph and VIF scores are all well below 5, meaning that we avoid collinearity.
+
+## Summary of models
+
+To summarize what we have done with the AirBnB dataset, we will use `huxreg` to display all models we have produced and see their significance, adjusted $R^2$ and the Residual Standard Error.
+
+```{r}
+#use huxreg to produce the summary table
+huxreg(model1, model2, model3, model4, model5, model6, model7, model_all,
+         statistics = c('#observations' = 'nobs',
+                        'R squared' = 'r.squared',
+                        'Adj. R Squared' = 'adj.r.squared',
+                        'Residual SE' = 'sigma'),
+       number_format = "%.3f",
+       bold_signif = 0.05) %>% 
+  kable(caption = "Comparison of models",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%", height = "400px")
+
+```
+
+We can see from the above table that model 7 has the highest adjusted $R^2$ and the lowest Residual Standard Error if we exclude the model with all variables we regarded as interesting. Since model 7 gives us best result in terms of coefficient significance and differs only very slightly from the $R^2$ and RSE metrics of the model with all variables, we believe it is best model for explanatory and predictive purposes.
+
+Our final model is thus as followed: [Will change this formula when all others are set]
+
+$$
+\begin{aligned}
+\widehat{log\_price\_4\_nights} = & 7.961 - 0.565 \cdot room\_type_{Hotelroom} - 0.511 \cdot room\_type_{Privateroom}\\
+& - 1.214 \cdot room\_type_{Sharedroom} + 0.072 \cdot top\_reviewed_{yes} - \\
+& + 0.036 \cdot accommodates + 0.246 \cdot bedrooms\\
+& - 0.629 \cdot city\_area_{North} - 0.400 \cdot city\_area_{South}\\
+& - 0.341 \cdot city\_area_{VeryNorth} - 0.437 \cdot city\_area_{West}\\
+& + 0.012 \cdot availability\_30 - 0.039 \cdot reviews\_per\_month
+\end{aligned}
+$$
+Note that for three categorical variables in our model, namel `room_type`, `top_reviewed`, and `city_area`, the baseline values are respectively `entire home/apt`, `no`, and `Central`. This means that our model assumes an entire home/apartment that has not a rating of 4.8 or more and is in central Stockholm as the baseline.
+
+## Validation of final model perfomance
+
+To avoid overfitting and validate the above model, we will now conduct an out-of-sample testing on it. We will split the dataset into two subsets and use the training subset to fit our model 7 to create new estimates for coefficients. We use the new model 7 on the testing subset and see how much the Root Mean Squared Error changes.
+
+```{r}
+#set the random seed for reproducibility
+set.seed(1234)
+
+#split into two subsets, one for training and the other for testing
+train_test_split <- initial_split(listings_condensed, prop = 0.75)
+listings_train <- training(train_test_split)
+listings_test <- testing(train_test_split)
+
+#calculate the RMSE of the training data fitted with model 7
+rmse_train <- listings_train %>% 
+  mutate(predictions = predict(model7, .)) %>% 
+  summarise(sqrt(sum(predictions - log_price_4_nights)**2/n())) %>% 
+  pull()
+
+#calculate the RMSE of the testing data fitted with model 7
+rmse_test <- listings_test %>% 
+  mutate(predictions = predict(model7, .)) %>% 
+  summarise(sqrt(sum(predictions - log_price_4_nights)**2/n())) %>% 
+  pull()
+
+#calculate the difference of RMSE between training and testing data
+print(rmse_train)
+print(rmse_test)
+print(rmse_test - rmse_train)
+
+```
+
+[Interpretation for train andtest]
+
+## Prediction of price with final model
+
+Finally, we want to use our best model to predict the price of a 4-night stay in Stockholm. Suppose we are planning to visit the city to over reading week, and we want to stay in an Airbnb. We first find Airbnb's in Stockholm that are apartments with a private room, have at least 10 reviews, and an average rating of at least 90\% (i.e. 4.5 or above). We then use our best model to predict the total cost to stay at this Airbnb for 4 nights.
+
+Let's create a new dataset that meets our demand from `listings_condensed`, using the four conditions above to filter.
+
+```{r}
+#create new dataset based on outlined conditions
+target_listings <- listings_condensed %>% 
+  filter(prop_type_simplified == "Private room in rental unit",
+         room_type == "Private room",
+         number_of_reviews >= 10,
+         top_reviewed == "yes")
+
+head(target_listings) %>% 
+  kable(caption = "First 6 rows of our target dataset",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%")
+
+```
+
+There are 44 listings that suit our preferences. We can now use `predict()` to generate price estimates with the help of our model. Alternatively we can also use `broom::augment()`. Here we use the latter method to add confidence interval more conveniently.
+
+```{r}
+#predict log_price_4_nights
+target_listings <- augment(model7,
+        newdata = target_listings,
+        se_fit = T,
+        interval = "confidence")
+  
+#convert log price to price
+target_listings <- target_listings %>% 
+  mutate(expected_price = exp(.fitted),
+         expected_price_lower = exp(.lower),
+         expected_price_upper = exp(.upper)) 
+  
+#show expected price of first 6 observations
+target_listings %>% 
+  select(expected_price, expected_price_lower, expected_price_upper) %>%
+  kable(caption = "Our target prices and confidence intervals",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial",
+                fixed_thead = T) %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%", height = "400px") 
+
+#show summary statistics including CI
+favstats(target_listings$expected_price) %>% 
+  mutate(SE = sd/sqrt(n),
+         t_crit = qt(0.975, n-1),
+         margin_of_error = t_crit * SE,
+         lower = mean - margin_of_error,
+         upper = mean + margin_of_error) %>% 
+  kable(caption = "Statistics on our target prices",
+        align = "l") %>% 
+  kable_classic(c("striped", "hover", "condensed"),
+                html_font = "Arial") %>% 
+  row_spec(0, bold = T) %>% 
+  scroll_box(width = "100%") 
+
+```
+
+Our predictions for the price of a 4-night stay have a mean of  *2,375 SEK (201 GBP)* which is our point estimate and range from 1,210 to 6,126 SEK. The appropriate 95\% confidence interval for our prediction ranges from 2,120.12 SEK to 2,630.73 SEK, meaning that we can be 95\% confident that the price for a 4-night stay (`price_4_nights`) will lie between these two numbers.
+
+We also create a line and ribbon plot to visualize our general prediction on selected listings.
+
+```{r}
+
+#arrange and create an ID in ascending order
+target_listings <- target_listings %>% 
+  arrange(expected_price) %>% 
+  mutate(ID = row_number())
+
+#plot distribution of predicted prices
+ggplot(target_listings, aes(x = ID)) +
+  geom_line(aes(y = expected_price)) +
+  geom_ribbon(aes(ymin = expected_price_lower,
+                  ymax = expected_price_upper),
+              fill = "grey",
+              alpha = 0.5) +
+  geom_hline(yintercept = mean(target_listings$expected_price),
+             color = "blue")+
+  labs(title = "Price predictions for four-night stay in Stockholm",
+       x = NULL,
+       y = "Price") +
+  theme_bw() +
+  NULL
+
+```
+
+
+
+
+# Findings and recommendation
+
+
+
+
+
+
+
+
